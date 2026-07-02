@@ -96,11 +96,11 @@ JSONC 格式（支持 `//` 注释和尾逗号）。关键字段：
   "udid": "AN2FVB1913005525",  // adb 序列号，留空自动选第一个
   "item_url": "https://...",   // 商品链接（优先级高于 keyword）
   "keyword": "演出名称",        // 搜索关键词（item_url 为空时用）
-  "city": "襄阳",
+  "city": "XXX",
   "date": "08.01",             // MM.DD
   "price": "380",
   "price_index": 1,            // 票价列表索引（从 1 开始）
-  "users": ["谢晖"],           // 观演人列表
+  "users": ["XXX"],           // 观演人列表
   "if_commit_order": false,
   "probe_only": true,
   "start_at": "2026-07-01 20:00:00",
