@@ -1,0 +1,24 @@
+{
+  "udid": "AN2FVB1913005525",  // adb devices 序列号，留空自动选择
+  "app_package": "cn.damai",
+  "app_activity": ".launcher.splash.SplashMainActivity",
+  "item_url": "https://detail.damai.cn/item.htm?id=1057076960196",  // 商品链接（优先级高于 keyword）
+  "keyword": "襄阳·李荣浩「黑马」世界巡回演唱会-襄阳站",  // 搜索关键词
+  "users": [  // 观演人列表
+    "谢晖"
+  ],
+  "city": "襄阳",
+  "date": "08.01",
+  "price": "380",
+  "price_index": 1,
+  "if_commit_order": false,  // true=正式提交订单
+  "probe_only": true,  // true=仅探测不点购票
+  "auto_navigate": true,  // 自动导航到目标演出
+  "start_at": "2026-07-01 20:00:00",
+  "warmup_sec": 120,  // 开售前预热秒数
+  "ntp_server": "ntp.aliyun.com",
+  "sprint_interval_ms": 50,  // 冲刺循环间隔(ms)
+  "sprint_max_retries": 60,  // 最大重试次数
+  "log_level": "DEBUG",
+  "log_dir": "logs"
+}
