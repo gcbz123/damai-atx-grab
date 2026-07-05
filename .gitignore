@@ -21,3 +21,6 @@ config.local.jsonc
 
 # 测试缓存
 .pytest_cache/
+
+# GCM 诊断日志
+gcm-diagnose.log
