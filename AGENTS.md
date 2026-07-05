@@ -110,6 +110,7 @@ JSONC 格式（支持 `//` 注释和尾逗号）。关键字段：
 ```
 
 ⚠️ `price_index` 从 **1** 开始（GUI 表单填入时不变），但内部取列表时做 `min(idx-1, len-1)`。
+- **选择票档逻辑** (`phase_machine.py`): 4 层策略逐级降级：(1) 找 `price_flowlayout/perform_price` 容器内 clickable 子元素，(2) 文本匹配 ¥/￥/价格数字，(3) resource-id 含 price/ticket 的 clickable 元素，(4) 通用 clickable 非底部元素。所有策略都加 `y_min ≤ y ≤ y_max` 过滤顶部标题栏和底部导航栏。XML 全失败则降级到硬编码坐标（覆盖 6 个位置）。索引超出时自动取最后一个。
 
 ## ⚠️ 已知坑点
 

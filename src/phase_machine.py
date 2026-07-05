@@ -217,19 +217,19 @@ class PhaseMachine:
         time.sleep(0.3)
 
     def _select_price_item(self):
-        """选择票档 — 用 long_click 确保选中（大麦需要长按触发选中态）"""
+        """选择票档 — 优先从页面 XML 动态查找，失败则降级到硬编码坐标"""
         logger.info(f"选择票档索引: {self.config.price_index}")
 
-        # 票档已知坐标
-        fallback_coords = [
-            (236, 1066),  # 第1个
-            (644, 1066),  # 第2个
-            (295, 1237),  # 第3个
-        ]
-        idx = min(self.config.price_index - 1, len(fallback_coords) - 1)
-        if idx < 0:
-            idx = 0
-        coords = fallback_coords[idx]
+        target_idx = self.config.price_index - 1  # 转为 0-based
+        if target_idx < 0:
+            target_idx = 0
+
+        # 策略 1: 从页面 XML 提取票档列表，按索引选择
+        coords = self._find_price_coords_from_xml(target_idx)
+        if coords is None:
+            # 策略 2: 降级到硬编码坐标
+            coords = self._fallback_price_coords(target_idx)
+
         # 大麦新版需要 long_click 才能触发选中态（普通 click 可能被场次区拦截）
         self.d.long_click(*coords, 0.5)
         logger.info(f"选择票档 @ {coords}")
@@ -243,6 +243,185 @@ class PhaseMachine:
             logger.warning("票档可能未选中，重试一次")
             self.d.long_click(*coords, 0.5)
             time.sleep(0.5)
+
+    def _find_price_coords_from_xml(self, target_idx: int) -> Optional[tuple[int, int]]:
+        """从页面 XML 中查找票档元素，返回第 N 个的坐标
+
+        搜索策略（优先级从高到低）:
+          1. 找 resource-id 含 price_flowlayout/perform_price 的容器内的 clickable 子元素
+          2. 找文本含 ¥ / ￥ / 价格数字的节点
+          3. 找 resource-id 含 price/ticket 的 clickable 节点
+          4. 找通用 clickable 非底部元素
+
+        Args:
+            target_idx: 目标索引（0-based）
+
+        Returns:
+            (x, y) 坐标，或 None
+        """
+        try:
+            xml = self.d.dump_hierarchy()
+            import xml.etree.ElementTree as ET
+            import re as re_mod
+
+            root = ET.fromstring(xml.encode("utf-8"))
+            screen_w, screen_h = self.d.window_size()
+
+            # 顶部排除高度：状态栏 + 导航栏 (~150px)
+            y_min = int(screen_h * 0.12)
+            # 底部排除高度：底部导航栏
+            y_max = int(screen_h * 0.75)
+
+            # 收集所有节点（遍历一次，后续复用）
+            all_nodes = []
+            for el in root.iter():
+                text = (el.get("text") or "").strip()
+                cd = (el.get("content-desc") or "").strip()
+                rid = (el.get("resource-id") or "").strip()
+                bounds_str = (el.get("bounds") or "").strip()
+                clickable = el.get("clickable", "false") == "true"
+                if bounds_str:
+                    parsed = self._parse_bounds(bounds_str)
+                    if parsed:
+                        cx, cy = parsed
+                        all_nodes.append({
+                            "text": text, "content_desc": cd,
+                            "rid": rid, "cx": cx, "cy": cy,
+                            "clickable": clickable,
+                        })
+
+            all_candidates = []
+
+            # ——— 策略 1: 找 price 容器内的 clickable 子元素 ———
+            # 大麦票价容器 resource-id 含 price_flowlayout / perform_price
+            container_bounds = None
+            for n in all_nodes:
+                if any(kw in n["rid"] for kw in ('price_flowlayout', 'perform_price', 'price_item')):
+                    container_bounds = (n["cx"], n["cy"])
+                    # 找到容器后，取它的可见区域上下边界
+                    # 直接从 XML 重新解析容器 bounds
+                    m = re_mod.search(
+                        rf'resource-id="{re_mod.escape(n["rid"])}"[^>]*bounds="(\[(\d+),(\d+)\]\[(\d+),(\d+)\])"',
+                        xml
+                    )
+                    if m:
+                        cy1, cy2 = int(m.group(3)), int(m.group(5))
+                        # 只取容器范围内的 clickable 元素
+                        for cn in all_nodes:
+                            if cn["clickable"] and cy1 <= cn["cy"] <= cy2:
+                                all_candidates.append((cn["cx"], cn["cy"]))
+                        if all_candidates:
+                            logger.debug(f"策略1: 在容器 {n['rid']} 内找到 {len(all_candidates)} 个票档")
+                            return self._pick_from_candidates(all_candidates, target_idx, "策略1")
+
+            # ——— 策略 2: 文本匹配（¥ / ￥ / 价格数字） ———
+            for n in all_nodes:
+                text = n["text"] or n["content_desc"]
+                if not text:
+                    continue
+                has_price_symbol = '¥' in text or '￥' in text
+                is_price_number = re_mod.match(r'^\d{3,5}$', text)
+                if has_price_symbol or is_price_number:
+                    cx, cy = n["cx"], n["cy"]
+                    if y_min <= cy <= y_max:
+                        all_candidates.append((cx, cy))
+
+            # 去重后按 Y 排序
+            unique = self._dedup_candidates(all_candidates)
+            if unique:
+                logger.debug(f"策略2: 文本匹配到 {len(unique)} 个票价候选: {unique}")
+                return self._pick_from_candidates(unique, target_idx, "策略2")
+
+            # ——— 策略 3: resource-id 含 price/ticket 的 clickable 元素 ———
+            all_candidates = []
+            # 先找出所有匹配的 resource-id
+            matched_rids = set()
+            for n in all_nodes:
+                if n["clickable"] and ('price' in n["rid"] or 'ticket' in n["rid"]):
+                    matched_rids.add(n["rid"])
+            # 收集这些 id 对应元素的坐标（只取 clickable）
+            for n in all_nodes:
+                if n["rid"] in matched_rids and n["clickable"]:
+                    cx, cy = n["cx"], n["cy"]
+                    if y_min <= cy <= y_max:
+                        all_candidates.append((cx, cy))
+
+            unique = self._dedup_candidates(all_candidates)
+            if unique:
+                logger.debug(f"策略3: resource-id 匹配到 {len(unique)} 个票价候选: {unique}")
+                return self._pick_from_candidates(unique, target_idx, "策略3")
+
+            # ——— 策略 4: 通用 clickable（无 resource-id，不在底部） ———
+            all_candidates = []
+            for n in all_nodes:
+                if n["clickable"] and not n["rid"]:
+                    if y_min <= n["cy"] <= y_max:
+                        all_candidates.append((n["cx"], n["cy"]))
+
+            unique = self._dedup_candidates(all_candidates)
+            if unique:
+                logger.debug(f"策略4: 通用 clickable 匹配到 {len(unique)} 个候选: {unique}")
+                return self._pick_from_candidates(unique, target_idx, "策略4")
+
+            logger.warning("XML 解析: 所有策略均未找到有效票档")
+            return None
+
+        except Exception as e:
+            logger.warning(f"XML 查找票档失败: {e}")
+            return None
+
+    def _dedup_candidates(self, candidates: list) -> list:
+        """去重并排序，基于 10px 精度"""
+        if not candidates:
+            return []
+        seen = set()
+        unique = []
+        for cx, cy in candidates:
+            key = (round(cx / 10) * 10, round(cy / 10) * 10)
+            if key not in seen:
+                seen.add(key)
+                unique.append((cx, cy))
+        unique.sort(key=lambda p: p[1])  # 按 Y 排序
+        return unique
+
+    def _pick_from_candidates(self, candidates: list, target_idx: int,
+                              strategy: str = "") -> Optional[tuple[int, int]]:
+        """从候选列表中选取目标索引的坐标"""
+        if target_idx < len(candidates):
+            coord = candidates[target_idx]
+            logger.info(f"XML 选择第 {target_idx + 1} 个票档 @ {coord} (策略: {strategy})")
+            return coord
+        logger.warning(f"策略{strategy}: 候选 {len(candidates)} 个, 目标索引 {target_idx} 超出")
+        return None
+
+    def _parse_bounds(self, bounds_str: str) -> Optional[tuple[int, int]]:
+        """解析 bounds="[x1,y1][x2,y2]" 返回中点坐标"""
+        m = re_mod.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
+        if m:
+            x1, y1, x2, y2 = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+            return ((x1 + x2) // 2, (y1 + y2) // 2)
+        return None
+
+    def _fallback_price_coords(self, target_idx: int) -> tuple[int, int]:
+        """降级到硬编码坐标（仅覆盖 6 个票档位）
+
+        Args:
+            target_idx: 目标索引（0-based）
+
+        Returns:
+            (x, y) 坐标
+        """
+        fallback_coords = [
+            (236, 1066),  # 第1行左
+            (644, 1066),  # 第1行右
+            (295, 1237),  # 第2行左
+            (644, 1237),  # 第2行右
+            (295, 1408),  # 第3行左
+            (644, 1408),  # 第3行右
+        ]
+        idx = min(target_idx, len(fallback_coords) - 1)
+        logger.warning(f"使用降级坐标 {idx}: {fallback_coords[idx]}")
+        return fallback_coords[idx]
 
     def _run_confirm(self):
         """阶段 5: 点击「确认」并提交订单"""
