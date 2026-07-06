@@ -357,36 +357,9 @@ class PhaseMachine:
         self.d.click(*coords)
         logger.info(f"选择票档 @ {coords} (策略: {strategy_used})")
 
-        # 轮询检测数量选择区（20ms 间隔，600ms 超时；元素出现即退出）
-        _poll_start = time.time()
-        _detected = False
-        while time.time() - _poll_start < 0.6:
-            try:
-                if self.d(resourceIdContains='layout_num').exists:
-                    _detected = True
-                    break
-            except Exception:
-                pass
-            time.sleep(0.02)
-        if _detected:
-            logger.info("票档已选中（检测到数量选择区）")
-        else:
-            # 首次未命中，重试一次（保留兜底；xml-c 的偏移已前置到首次点击）
-            retry_coords = coords
-            logger.warning(f"票档可能未选中，重试一次 @ {retry_coords}")
-            self.d.click(*retry_coords)
-            # 重试后用更短轮询确认（260ms 足矣，前面已等过 600ms）
-            _retry_start = time.time()
-            while time.time() - _retry_start < 0.26:
-                try:
-                    if self.d(resourceIdContains='layout_num').exists:
-                        _detected = True
-                        break
-                except Exception:
-                    pass
-                time.sleep(0.02)
-            if _detected:
-                logger.info("票档已选中（重试后检测到数量选择区）")
+        # 页面短暂稳定（无需轮询 layout_num——实测该元素在当前 UI 版本不存在，
+        # 轮询只会空跑 600ms 然后触发无意义重试。+15px 偏移已确保命中率）
+        time.sleep(0.08)
 
     def _find_price_coords(self, target_idx: int, cached_xml: str = None) -> Optional[tuple[int, int]]:
         """查找票档元素坐标，返回第 N 个的坐标
@@ -793,19 +766,21 @@ class PhaseMachine:
                 return
         # 进入订单页后：等待页面渲染完成再搜按钮
         # Activity 名在 onCreate 就设置好了，但 UI 元素（提交按钮）需要额外时间渲染，
-        # 用短轮询（50ms×6=300ms 兜底）避免固定 sleep。
+        # 实测约 1.2s 按钮才进入 XML。首次等 300ms 再 dump（减少 dump 次数），
+        # 然后短轮询（100ms 间隔，2.5s 兜底，50 次循环 ≈ 5 次 dump）。
         logger.info("等待订单页渲染（短轮询检测提交按钮）...")
         submit_coords = self._submit_btn_coords
         if submit_coords is None:
+            time.sleep(0.3)  # 首次等 300ms，避免渲染未完成时的 dump 浪费
             _find_start = time.time()
-            while time.time() - _find_start < 0.5:
+            while time.time() - _find_start < 2.5:
                 xml = self.d.dump_hierarchy()
                 submit_coords = self._find_submit_btn_coords(xml)
                 if submit_coords is not None:
                     self._submit_btn_coords = submit_coords
                     logger.info(f"已缓存提交按钮坐标: {submit_coords} (查找耗时: {int((time.time()-_find_start)*1000)}ms)")
                     break
-                time.sleep(0.05)
+                time.sleep(0.1)
         else:
             logger.info(f"复用缓存的提交按钮坐标: {submit_coords}")
 
