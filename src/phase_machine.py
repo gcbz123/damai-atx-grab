@@ -328,9 +328,6 @@ class PhaseMachine:
         # 选择票档
         self._select_price_item()
 
-        # 页面短暂稳定
-        time.sleep(0.1)
-
     def _select_price_item(self):
         """选择票档 — 优先从页面 XML 动态查找，失败则降级到硬编码坐标
 
@@ -808,7 +805,6 @@ class PhaseMachine:
         self.d.click(*submit_coords)
         logger.info(f"已点击提交按钮 @ {submit_coords}")
 
-        time.sleep(0.3)
         self.set_phase(Phase.DONE)
         logger.info("=" * 50)
         logger.info("🎉 订单已提交，请在手机上手动完成支付")
