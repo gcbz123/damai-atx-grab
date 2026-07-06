@@ -2,15 +2,15 @@
   "udid": "AN2FVB1913005525",  // adb devices 序列号，留空自动选择
   "app_package": "cn.damai",
   "app_activity": ".launcher.splash.SplashMainActivity",
-  "item_url": "https://detail.damai.cn/item.htm?id=1057076960196",  // 商品链接（优先级高于 keyword）
-  "keyword": "襄阳·李荣浩「黑马」世界巡回演唱会-襄阳站",  // 搜索关键词
+  "item_url": "https://m.damai.cn/damai/home/index.html?itemId=19268449026",  // 商品链接（优先级高于 keyword）
+  "keyword": "【襄阳】“赴长歌”2026襄阳国风演唱会",  // 搜索关键词
   "users": [  // 观演人列表
     "XXX"
   ],
-  "city": "XXX",
-  "date": "08.01",
-  "price": "380",
-  "price_index": 1,
+  "city": "襄阳",
+  "date": "07.19",
+  "price": "680",
+  "price_index": 5,
   "if_commit_order": false,  // true=正式提交订单
   "probe_only": true,  // true=仅探测不点购票
   "auto_navigate": true,  // 自动导航到目标演出

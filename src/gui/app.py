@@ -464,6 +464,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._worker: Optional[GrabWorker] = None
         self._device_connected = False
+        self._ntp_offset_ms = 0.0  # NTP 校时偏移（ms），0=未校准
         self._setup_ui()
         self._load_initial_config()
         self._check_device_status()
@@ -557,6 +558,25 @@ class MainWindow(QMainWindow):
         self._progress_bar.setValue(0)
         action_row.addWidget(self._progress_bar)
 
+        # 毫秒级时钟（显示本地时间，NTP 校时后显示校准时间）
+        self._clock_label = QLabel("00:00:00.000")
+        self._clock_label.setStyleSheet("""
+            QLabel {
+                font-family: 'Consolas', monospace;
+                font-size: 15px; font-weight: bold;
+                color: #333; padding: 2px 10px;
+                background-color: #f0f0f0;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+            }
+        """)
+        action_row.addWidget(self._clock_label)
+
+        # 时钟更新定时器（50ms 刷新毫秒）
+        self._clock_timer = QTimer(self)
+        self._clock_timer.timeout.connect(self._update_clock)
+        self._clock_timer.start(50)
+
         action_row.addStretch()
 
         self._start_btn = QPushButton("▶ 开始运行")
@@ -601,6 +621,22 @@ class MainWindow(QMainWindow):
 
         # 状态栏
         self.statusBar().showMessage("就绪")
+
+    # ---------- 毫秒级时钟 ----------
+
+    def _update_clock(self):
+        """更新毫秒级时钟显示
+
+        如果已通过 NTP 校时，显示校准后的时间。
+        """
+        from datetime import datetime
+        now = datetime.now()
+        if self._ntp_offset_ms != 0:
+            # 应用 NTP 偏移校准
+            import time as _time
+            calib_ts = _time.time() * 1000 - self._ntp_offset_ms
+            now = datetime.fromtimestamp(calib_ts / 1000)
+        self._clock_label.setText(now.strftime("%H:%M:%S.") + f"{now.microsecond // 1000:03d}")
 
     # ---------- 设备管理 ----------
 
@@ -807,17 +843,29 @@ class MainWindow(QMainWindow):
         self._worker.test_ntp(server)
 
     def _on_ntp_test_result(self, server: str, offset_ms: float):
-        """NTP 测试结果回调"""
+        """NTP 测试结果回调 — 成功时同时校准毫秒时钟"""
         self._config_panel._ntp_test_btn.setEnabled(True)
         if offset_ms < 0:
             self._config_panel._ntp_status_label.setText("连接失败")
             self._config_panel._ntp_status_label.setStyleSheet("color: #F44336; font-size: 11px;")
             self._log_panel.append_log(f"NTP 测试失败: {server}")
         else:
+            self._ntp_offset_ms = offset_ms  # 存储偏移，时钟将显示校准时间
             sign = "+" if offset_ms >= 0 else ""
-            self._config_panel._ntp_status_label.setText(f"偏移 {sign}{offset_ms:.0f}ms")
+            self._config_panel._ntp_status_label.setText(f"偏移 {sign}{offset_ms:.0f}ms ✓")
             self._config_panel._ntp_status_label.setStyleSheet("color: #4CAF50; font-size: 11px;")
             self._log_panel.append_log(f"NTP 测试成功: {server}, 偏移 {sign}{offset_ms:.0f}ms")
+            # 时钟外观更新为已校准
+            self._clock_label.setStyleSheet("""
+                QLabel {
+                    font-family: 'Consolas', monospace;
+                    font-size: 15px; font-weight: bold;
+                    color: #2E7D32; padding: 2px 10px;
+                    background-color: #E8F5E9;
+                    border: 1px solid #4CAF50;
+                    border-radius: 4px;
+                }
+            """)
 
     # ---------- 设备序列号检测 ----------
 

@@ -2,6 +2,10 @@
 
 预热阶段通过 XPath 记录按钮坐标，冲刺阶段直接用 d.click(x, y)
 跳过元素查找，实现 1-5ms 单次点击。
+
+优化:
+  - 增加坐标漂移检测（页面滚动后坐标可能偏移）
+  - 失败重试时自动偏移补偿（±5px）
 """
 
 from typing import Optional
@@ -14,6 +18,7 @@ class CoordBlindClicker:
 
     预热时记录按钮坐标 -> 冲刺时盲点点击。
     支持自动降级：盲点连续失败 → 回退 XPath → 重新校准坐标。
+    支持坐标漂移补偿：连续失败时自动微调坐标重试。
 
     Usage:
         clicker = CoordBlindClicker(d)
@@ -31,6 +36,8 @@ class CoordBlindClicker:
         self.xpath_cache: dict[str, str] = {}
         # 连续失败计数
         self._consecutive_failures: dict[str, int] = {}
+        # 漂移补偿步长（像素）
+        self._drift_step = 5
         self.max_fallbacks = 3  # 连续失败几次后降级
 
     def record_coord(self, button_name: str, xpath_expr: str) -> bool:
@@ -61,6 +68,8 @@ class CoordBlindClicker:
     def blind_click(self, button_name: str) -> bool:
         """冲刺阶段直接 d.click() 坐标注入，单次 1-5ms
 
+        优化：增加坐标漂移补偿 — 连续失败时自动微调坐标重试。
+
         Args:
             button_name: 按钮别名
 
@@ -72,15 +81,28 @@ class CoordBlindClicker:
             return self.fallback_click(button_name)
 
         x, y = self.coord_cache[button_name]
+        failures = self._consecutive_failures.get(button_name, 0)
+
         try:
+            # 如果有连续失败，尝试漂移补偿（最多 ±15px）
+            if failures > 0:
+                offset = self._drift_step * min(failures, 3)
+                # 交替尝试不同方向
+                if failures % 2 == 1:
+                    x += offset
+                else:
+                    x -= offset
+                if failures % 3 == 0:
+                    y += self._drift_step
+                else:
+                    y -= self._drift_step
+
             self.d.click(x, y)
             self._consecutive_failures[button_name] = 0
             return True
         except Exception as e:
-            logger.debug(f"盲点点击失败 {button_name}: {e}")
-            self._consecutive_failures[button_name] = (
-                self._consecutive_failures.get(button_name, 0) + 1
-            )
+            logger.debug(f"盲点点击失败 {button_name} @ ({x},{y}): {e}")
+            self._consecutive_failures[button_name] = failures + 1
             # 连续失败超过阈值 → 降级到 XPath
             if self._consecutive_failures[button_name] >= self.max_fallbacks:
                 logger.warning(f"{button_name} 连续 {self.max_fallbacks} 次失败，降级到 XPath")

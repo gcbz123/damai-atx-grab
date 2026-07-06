@@ -6,7 +6,7 @@
 性能指标:
   - 单次盲点点击: 1-5ms
   - 循环间隔: 50ms（可配置）
-  - 页面跳转检测: 5-15ms/次（Activity 检测）
+  - 页面跳转检测: 每 N 次点击检测一次（减少 d.info 调用开销）
   - 降级到 XPath 查找: 10-50ms
 """
 
@@ -25,6 +25,7 @@ class SprintEngine:
 
     在开售瞬间以毫秒级间隔循环点击购票/确认/提交按钮。
     冲刺阶段不做元素查找，仅坐标盲点点击。
+    页面跳转检测采用间隔采样策略，减少 d.info 调用开销。
 
     Usage:
         engine = SprintEngine(d, clicker)
@@ -66,30 +67,33 @@ class SprintEngine:
         self._click_count = 0
         self._page_changed = False
 
-        # 等待目标时刻
+        # 等待目标时刻 — 使用 CPU 自旋保证精度
         now = int(time.time() * 1000)
         wait_ms = target_time_ms - now
         if wait_ms > 0:
             logger.debug(f"等待开售: {wait_ms}ms")
-            while int(time.time() * 1000) < target_time_ms:
-                pass  # CPU 自旋
+            target = time.perf_counter() + wait_ms / 1000
+            while time.perf_counter() < target:
+                pass
 
-        # 冲刺循环
+        # 冲刺循环 — 每 3 次点击检测一次页面变化，减少 d.info 开销
+        page_check_interval = max(3, max_retries // 10)
         for i in range(max_retries):
             self.clicker.blind_click('buy_btn')
             self._click_count += 1
 
-            # 检测页面是否变化
-            if self._check_page_changed(expected_not_contains='detail'):
-                elapsed = (time.time() - self._start_time) * 1000
-                logger.info(
-                    f"✅ 购票页面跳转成功！"
-                    f"点击 {self._click_count} 次, 耗时 {elapsed:.0f}ms"
-                )
-                self._page_changed = True
-                return True
+            # 间隔检测页面变化（减少 70%+ 的 d.info 调用）
+            if i % page_check_interval == 0 or i == max_retries - 1:
+                if self._check_page_changed(expected_not_contains='detail'):
+                    elapsed = (time.time() - self._start_time) * 1000
+                    logger.info(
+                        f"✅ 购票页面跳转成功！"
+                        f"点击 {self._click_count} 次, 耗时 {elapsed:.0f}ms"
+                    )
+                    self._page_changed = True
+                    return True
 
-            # 间隔等待
+            # 间隔等待 — 小间隔用 perf_counter 自旋
             if interval_ms > 0:
                 self._wait_interval(interval_ms)
 
@@ -115,14 +119,17 @@ class SprintEngine:
         """
         logger.info(f"🚀 冲刺确认开始 | 间隔={interval_ms}ms")
 
+        # 间隔检测策略
+        page_check_interval = max(3, max_retries // 8)
         for i in range(max_retries):
             self.clicker.blind_click('confirm_btn')
             self._click_count += 1
 
-            if self._check_page_changed(expected_contains='order'):
-                logger.info(f"✅ 确认页跳转成功！共点击 {self._click_count} 次")
-                self._page_changed = True
-                return True
+            if i % page_check_interval == 0 or i == max_retries - 1:
+                if self._check_page_changed(expected_contains='order'):
+                    logger.info(f"✅ 确认页跳转成功！共点击 {self._click_count} 次")
+                    self._page_changed = True
+                    return True
 
             if interval_ms > 0:
                 self._wait_interval(interval_ms)
@@ -146,14 +153,16 @@ class SprintEngine:
         """
         logger.info(f"🚀 冲刺提交开始 | 间隔={interval_ms}ms")
 
+        page_check_interval = max(3, max_retries // 8)
         for i in range(max_retries):
             self.clicker.blind_click('submit_btn')
             self._click_count += 1
 
-            if self._check_page_changed(expected_contains='pay'):
-                logger.info(f"✅ 提交成功！进入付款页！共点击 {self._click_count} 次")
-                self._page_changed = True
-                return True
+            if i % page_check_interval == 0 or i == max_retries - 1:
+                if self._check_page_changed(expected_contains='pay'):
+                    logger.info(f"✅ 提交成功！进入付款页！共点击 {self._click_count} 次")
+                    self._page_changed = True
+                    return True
 
             if interval_ms > 0:
                 self._wait_interval(interval_ms)
@@ -169,6 +178,7 @@ class SprintEngine:
         """检测页面是否变化
 
         通过 Activity 检测比元素查找快 10 倍。
+        hierarchy 兜底仅在 Activity 未明确匹配时执行。
 
         Args:
             expected_not_contains: 当前页面不应包含的文本
@@ -181,18 +191,34 @@ class SprintEngine:
             activity = self.d.info.get("currentActivity", "")
             activity_lower = activity.lower()
 
+            # 条件1: 期望包含某字符串（目标页特征）→ 命中则页面已变
             if expected_contains and expected_contains in activity_lower:
                 return True
+
+            # 条件2: 期望不包含某字符串（当前页特征消失）→ 命中则页面已变
             if expected_not_contains and expected_not_contains not in activity_lower:
                 return True
+
+            # 条件3: 当前页特征仍然存在 → 页面大概率未变，不执行 hierarchy 兜底
+            if expected_not_contains and expected_not_contains in activity_lower:
+                return False
+
+            # 条件4: Activity 检测未明确匹配 → 用 hierarchy 兜底
+            if expected_contains:
+                try:
+                    xml = self.d.dump_hierarchy()
+                    if expected_contains in xml:
+                        return True
+                except Exception:
+                    pass
+
             return False
         except Exception:
             return False
 
     def _wait_interval(self, interval_ms: int):
-        """精确等待间隔时间"""
+        """精确等待间隔时间 — 小间隔用 perf_counter 自旋"""
         if interval_ms < 15:
-            # 小间隔用 CPU 自旋
             target = time.perf_counter() + interval_ms / 1000
             while time.perf_counter() < target:
                 pass

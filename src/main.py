@@ -190,7 +190,6 @@ def main(argv: list[str] | None = None) -> int:
     # 运行抢票流程
     machine = PhaseMachine(config, d, safety)
     final_phase = machine.run()
-    machine.print_summary()
 
     return 0 if final_phase != Phase.ERROR else 1
 

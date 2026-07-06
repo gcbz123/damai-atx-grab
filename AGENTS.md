@@ -110,7 +110,17 @@ JSONC 格式（支持 `//` 注释和尾逗号）。关键字段：
 ```
 
 ⚠️ `price_index` 从 **1** 开始（GUI 表单填入时不变），但内部取列表时做 `min(idx-1, len-1)`。
-- **选择票档逻辑** (`phase_machine.py`): 4 层策略逐级降级：(1) 找 `price_flowlayout/perform_price` 容器内 clickable 子元素，(2) 文本匹配 ¥/￥/价格数字，(3) resource-id 含 price/ticket 的 clickable 元素，(4) 通用 clickable 非底部元素。所有策略都加 `y_min ≤ y ≤ y_max` 过滤顶部标题栏和底部导航栏。XML 全失败则降级到硬编码坐标（覆盖 6 个位置）。索引超出时自动取最后一个。
+- **选择票档逻辑** (`phase_machine.py`): 两阶段多策略混合定位。
+  **阶段 0 — u2 API 直接查找**（优先可靠）:
+  - a) 找 resource-id 含 `perform_price` / `price_item` / `price_flowlayout` 的容器内的 clickable 子元素
+  - b) 按文本含票价关键字（¥/￥/元/看台/内场/VIP/套票）的 clickable 元素
+  - c) 按 resource-id 含 price/ticket 的 clickable 元素（Y 过滤 + 最小宽度过滤）
+  **阶段 1 — XML 解析兜底**（`_find_via_xml`）:
+  - a) 文本匹配（¥/￥/元 + 纯数字 3-5位），加宽度和 Y 过滤
+  - b) resource-id 含 price/ticket，加宽度和 Y 过滤，候选 ≤20 个才采纳
+  - c) Y 行分组（20px 精度桶，取 ≥2 个元素的桶作为票价行）
+  **最终降级**: 硬编码坐标（覆盖 6 个位置）。索引超出时自动取最后一个。
+  **关键改进**: 阶段 0 的 u2 API 方法避免 XML 解析的文本编码问题，使用 `d(textContains=..., clickable=True)` 原生选择器，更可靠。
 
 ## ⚠️ 已知坑点
 
