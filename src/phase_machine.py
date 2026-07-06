@@ -779,7 +779,6 @@ class PhaseMachine:
         activity_lower = last_activity.lower()
         entered_order = 'order' in activity_lower or 'confirm' in activity_lower
 
-        xml = None
         if not entered_order:
             # Activity 检测失败兜底：dump 一次确认是否在订单页
             logger.warning(f"Activity 轮询未确认进入订单页 (last={last_activity}), 用 XML 兜底")
@@ -790,23 +789,29 @@ class PhaseMachine:
                 logger.warning("连点2次后仍未进入订单页")
                 self.set_phase(Phase.ERROR)
                 return
-
-        # P0+: 优先用缓存的提交按钮坐标，命中则免 dump
+        # 进入订单页后：等待页面渲染完成再搜按钮
+        # Activity 名在 onCreate 就设置好了，但 UI 元素（提交按钮）需要额外时间渲染，
+        # 用短轮询（50ms×6=300ms 兜底）避免固定 sleep。
+        logger.info("等待订单页渲染（短轮询检测提交按钮）...")
         submit_coords = self._submit_btn_coords
         if submit_coords is None:
-            # 仅在没缓存时才 dump（兜底路径已 dump 过则复用）
-            if xml is None:
+            _find_start = time.time()
+            while time.time() - _find_start < 0.5:
                 xml = self.d.dump_hierarchy()
-            submit_coords = self._find_submit_btn_coords(xml)
-            if submit_coords is None:
-                logger.warning("XML 中未找到「立即提交」按钮坐标")
-                self.set_phase(Phase.ERROR)
-                return
-            self._submit_btn_coords = submit_coords  # 缓存供下次复用
-            logger.info(f"已缓存提交按钮坐标: {submit_coords}")
+                submit_coords = self._find_submit_btn_coords(xml)
+                if submit_coords is not None:
+                    self._submit_btn_coords = submit_coords
+                    logger.info(f"已缓存提交按钮坐标: {submit_coords} (查找耗时: {int((time.time()-_find_start)*1000)}ms)")
+                    break
+                time.sleep(0.05)
         else:
             logger.info(f"复用缓存的提交按钮坐标: {submit_coords}")
-        logger.info("已进入订单页")
+
+        if submit_coords is None:
+            logger.warning("页面渲染超时，未找到提交按钮坐标")
+            self.set_phase(Phase.ERROR)
+            return
+        logger.info("已进入订单页，提交按钮已定位")
 
         # 第二步：等待页面稳定，用户可在此手动勾选观演人
         logger.info("等待页面稳定，请手动勾选观演人...")
