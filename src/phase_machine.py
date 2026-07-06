@@ -258,9 +258,18 @@ class PhaseMachine:
 
         if activity_lower and ('ticket' in activity_lower or 'sku' in activity_lower
                                 or 'price' in activity_lower or 'perform' in activity_lower):
-            # 已在票档页：Activity 已确认，dump 缓存 XML 供 _find_price_coords 复用
+            # 已在票档页：Activity 已确认，但票价数据可能异步加载未完成。
+            # 缓存 XML 时校验是否含价格标记（¥/￥），无则短轮询重试。
             logger.info(f"Activity={activity} 确认在票档页，缓存 XML")
-            self._cached_xml = self.d.dump_hierarchy()
+            for _ in range(5):
+                self._cached_xml = self.d.dump_hierarchy()
+                if '¥' in self._cached_xml or '￥' in self._cached_xml:
+                    import xml.etree.ElementTree as ET
+                    self._cached_xml_tree = ET.fromstring(self._cached_xml.encode("utf-8"))
+                    return
+                time.sleep(0.08)
+            # 5 次重试后仍无价格标记，用最后一次的缓存（_find_price_coords 可能兜底到）
+            logger.warning("票价数据可能未完全渲染，使用最后一次缓存")
             import xml.etree.ElementTree as ET
             self._cached_xml_tree = ET.fromstring(self._cached_xml.encode("utf-8"))
             return
