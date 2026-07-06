@@ -651,60 +651,101 @@ class PhaseMachine:
         return fallback_coords[idx]
 
     def _find_submit_btn_coords(self, xml: str) -> Optional[tuple[int, int]]:
-        """从 XML 中定位「立即提交」按钮的可点击坐标
+        """从 XML 中定位提交按钮的坐标
 
-        优化: 非递归 root.iter() + parent_map 替代递归 walk（省 ~400ms）。
+        支持多种文本变体（立即提交 / 提交订单 / 提交）
+        和 resource-id 匹配（submit / pay / commit），
+        以及大麦确认页（不含按钮文本时）的兜底策略。
         """
         import xml.etree.ElementTree as ET
 
         root = ET.fromstring(xml.encode("utf-8"))
+        screen_w, screen_h = self.d.window_size()
+        y_bottom = int(screen_h * 0.75)  # 底部按钮区起点
 
-        # 直接遍历查找包含「立即提交」的节点（C 级迭代，无递归开销）
+        # —— 策略 1: 文本匹配（最精确） ——
+        _SUBMIT_TEXTS = ('立即提交', '提交订单', '确认提交', '去支付', '提交')
         target_node = None
+        matched_text = ''
         for el in root.iter():
             text = (el.get("text") or "").strip()
             cd = (el.get("content-desc") or "").strip()
-            if '立即提交' in text or '立即提交' in cd:
-                target_node = el
+            for kw in _SUBMIT_TEXTS:
+                if kw in text or kw in cd:
+                    target_node = el
+                    matched_text = kw
+                    break
+            if target_node:
                 break
 
-        if target_node is None:
-            return None
+        if target_node is not None:
+            coord = self._resolve_clickable_node(target_node, root)
+            if coord:
+                logger.info(f"文本匹配「{matched_text}」-> @{coord}")
+                return coord
 
-        # 先检查目标节点自身是否 clickable
-        if target_node.get("clickable", "false") == "true":
-            bounds_str = target_node.get("bounds", "")
+        # —— 策略 2: resource-id 匹配 ——
+        for el in root.iter():
+            rid = (el.get("resource-id") or "").strip()
+            if any(kw in rid for kw in ('submit', 'pay', 'commit', 'btn_bottom', 'bottom_button')):
+                coord = self._resolve_clickable_node(el, root)
+                if coord:
+                    logger.info(f"resource-id 匹配 {rid} -> @{coord}")
+                    return coord
+
+        # —— 策略 3: 底部宽按钮兜底 ——
+        # 在订单页底部找宽度 > 80% 屏宽的 clickable 按钮
+        candidates = []
+        for el in root.iter():
+            if el.get("clickable", "false") != "true":
+                continue
+            bounds_str = (el.get("bounds") or "").strip()
+            m = _BOUNDS_RE.match(bounds_str)
+            if not m:
+                continue
+            x1, y1, x2, y2 = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+            cy = (y1 + y2) // 2
+            w = x2 - x1
+            if cy >= y_bottom and w > int(screen_w * 0.8):
+                candidates.append(((x1 + x2) // 2, cy))
+        if candidates:
+            candidates.sort(key=lambda p: p[1], reverse=True)  # 取最底部
+            logger.info(f"底部宽按钮兜底 @{candidates[0]}")
+            return candidates[0]
+
+        return None
+
+    def _resolve_clickable_node(self, node, root) -> Optional[tuple[int, int]]:
+        """从目标节点出发，找到可点击的坐标点"""
+        # 自身 clickable
+        if node.get("clickable", "false") == "true":
+            bounds_str = node.get("bounds", "")
             m = _BOUNDS_RE.match(bounds_str)
             if m:
                 x = (int(m.group(1)) + int(m.group(3))) // 2
                 y = (int(m.group(2)) + int(m.group(4))) // 2
-                logger.info(f"提交按钮自身 clickable @({x},{y})")
                 return (x, y)
 
-        # 构建父节点映射，向上找 clickable 祖先
-        # 在 500 节点树上约 <2ms
+        # 向上找 clickable 祖先
         parent_map = {child: parent for parent in root.iter() for child in parent}
-        node = target_node
-        for _ in range(5):  # 最多向上 5 层
-            if node not in parent_map:
+        cur = node
+        for _ in range(5):
+            if cur not in parent_map:
                 break
-            node = parent_map[node]
-            if node.get("clickable", "false") == "true":
-                bounds_str = node.get("bounds", "")
+            cur = parent_map[cur]
+            if cur.get("clickable", "false") == "true":
+                bounds_str = cur.get("bounds", "")
                 m = _BOUNDS_RE.match(bounds_str)
                 if m:
-                    x1, y1, x2, y2 = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
-                    cx = (x1 + x2) // 2
-                    cy = (y1 + y2) // 2
-                    logger.info(f"XML 定位提交按钮: {node.get('class','')} bounds={bounds_str} -> ({cx},{cy})")
-                    return (cx, cy)
+                    return ((int(m.group(1)) + int(m.group(3))) // 2,
+                            (int(m.group(2)) + int(m.group(4))) // 2)
 
-        # 没有 clickable 祖先，直接点击文本节点
-        bounds_str = target_node.get("bounds", "")
+        # 直接点文本节点
+        bounds_str = node.get("bounds", "")
         m = _BOUNDS_RE.match(bounds_str)
         if m:
-            x1, y1, x2, y2 = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
-            return ((x1 + x2) // 2, (y1 + y2) // 2)
+            return ((int(m.group(1)) + int(m.group(3))) // 2,
+                    (int(m.group(2)) + int(m.group(4))) // 2)
 
         return None
 
