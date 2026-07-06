@@ -90,7 +90,7 @@ class PhaseMachine:
         logger.info(f"阶段转换: {self.current_phase}")
 
     def _run_init(self):
-        """阶段 1: 初始化 — 关闭动画 + 盲点点击器（NTP 校时已移除，由 GUI 手动校时）"""
+        """阶段 1: 初始化 — 关闭系统动画（提升点击响应速度）"""
         self.set_phase(Phase.INIT)
 
         # 关闭系统动画提升性能（仅首次）
@@ -100,10 +100,6 @@ class PhaseMachine:
             self.d.shell("settings put global animator_duration_scale 0.0")
         except Exception:
             pass
-
-        # 初始化盲点点击器（不预热，点击时动态校准）
-        from src.coord_blind import CoordBlindClicker
-        self.clicker = CoordBlindClicker(self.d)
 
     def _run_wait(self):
         """阶段 2: 等待开售 — 测 RTT 补偿，CPU 自旋等待"""
@@ -159,24 +155,21 @@ class PhaseMachine:
 
         logger.info("--- 点击立即购票 ---")
 
-        # 使用盲点点击器预热坐标（比硬编码更可靠）
-        if hasattr(self, 'clicker') and self.clicker and self.clicker.has_coord('buy_btn'):
-            logger.info("使用盲点点击器点击购票按钮")
-            self.clicker.blind_click('buy_btn')
-        else:
-            # 降级到硬编码坐标
-            buy_coords = (841, 2250)
-            logger.info(f"点击购买按钮 @ {buy_coords}")
-            self.d.click(*buy_coords)
+        # 降级到硬编码坐标
+        buy_coords = (841, 2250)
+        logger.info(f"点击购买按钮 @ {buy_coords}")
+        self.d.click(*buy_coords)
 
-        # P1: 用 Activity 轮询代替固定 sleep(0.1)，跳转到票档页即退出（最多 0.5s 兜底）
+        # 用 Activity 轮询代替固定 sleep(0.1)，跳转到票档页即退出（最多 0.5s 兜底）
         # 实测 d.info 没有 currentActivity 字段（只有 currentPackageName），必须用 dumpsys
-        self._poll_until_activity_change(
+        last_act = self._poll_until_activity_change(
             deadline_ms=500,
             poll_interval_ms=30,
             exit_pred=lambda act: act != "" and "detail" not in act.lower(),
             log_label="BUY→票档页",
         )
+        # 保存 BUY 阶段检测到的 Activity，供 _ensure_price_page 复用（省一次 dumpsys）
+        self._buy_activity = last_act
 
     def _poll_until_activity_change(
         self,
@@ -226,13 +219,11 @@ class PhaseMachine:
         logger.info(f"[{log_label}] 轮询超时 {deadline_ms}ms (轮询 {poll_count} 次, last='{last_act}', {elapsed:.0f}ms)")
         return last_act
 
-    def _ensure_price_page(self):
+    def _ensure_price_page(self, activity_hint: str = ""):
         """确保页面在票档选择页（大麦可能先展示场次选择页）
 
-        优化:
-        - 减少 dump_hierarchy 调用，先用 u2 API 快速检测。
-        - P2: u2 API miss 后用 Activity 检测区分「已票档页」vs「场次选择页」，
-          避免无意义的 dump（票档页 ADN 不到 perform_price 时省 ~700ms）。
+        Args:
+            activity_hint: BUY 阶段已检测到的 Activity 名，可跳过重复 dumpsys（省 ~100ms）
         """
         logger.info("--- 确保进入票档页 ---")
 
@@ -244,16 +235,17 @@ class PhaseMachine:
         except Exception:
             pass
 
-        # P2: u2 API 未命中，先用 Activity 判断是否已在票档页
-        # 大麦票档/价格选择页 Activity 含 ticket/sku/price/perform
-        # 场次选择页 Activity 通常仍含 detail 或无变化
-        try:
-            out = self.d.shell("dumpsys window | grep mCurrentFocus").output or ""
-            import re as _re
-            m = _re.search(r'mCurrentFocus=Window\{[^}]+u0\s+([^}/]+)/([^}/\s]+)', out)
-            activity = m.group(2) if m else ""
-        except Exception:
-            activity = ""
+        # 使用 BUY 阶段传递的 Activity（省一次 dumpsys），否则实时查询
+        if activity_hint:
+            activity = activity_hint
+        else:
+            try:
+                out = self.d.shell("dumpsys window | grep mCurrentFocus").output or ""
+                import re as _re
+                m = _re.search(r'mCurrentFocus=Window\{[^}]+u0\s+([^}/]+)/([^}/\s]+)', out)
+                activity = m.group(2) if m else ""
+            except Exception:
+                activity = ""
         activity_lower = activity.lower()
 
         if activity_lower and ('ticket' in activity_lower or 'sku' in activity_lower
@@ -322,8 +314,8 @@ class PhaseMachine:
             logger.info("未配置票价，跳过")
             return
 
-        # 先确保在票档页
-        self._ensure_price_page()
+        # 先确保在票档页（复用 BUY 阶段的 Activity 检测结果，省一次 dumpsys）
+        self._ensure_price_page(activity_hint=getattr(self, '_buy_activity', ''))
 
         # 选择票档
         self._select_price_item()
@@ -777,16 +769,23 @@ class PhaseMachine:
         logger.info("等待订单页渲染（短轮询检测提交按钮）...")
         submit_coords = self._submit_btn_coords
         if submit_coords is None:
-            time.sleep(0.3)  # 首次等 300ms，避免渲染未完成时的 dump 浪费
+            time.sleep(0.2)  # 首次等 200ms，减少早期无效 dump
             _find_start = time.time()
+            # 优先用 u2 API 快速检测按钮出现（~50ms/次 vs dump_hierarchy ~250ms/次），
+            # 按钮出现后再 dump 一次获取精确坐标。
             while time.time() - _find_start < 2.5:
-                xml = self.d.dump_hierarchy()
-                submit_coords = self._find_submit_btn_coords(xml)
-                if submit_coords is not None:
-                    self._submit_btn_coords = submit_coords
-                    logger.info(f"已缓存提交按钮坐标: {submit_coords} (查找耗时: {int((time.time()-_find_start)*1000)}ms)")
-                    break
-                time.sleep(0.1)
+                try:
+                    if self.d(text='立即提交', clickable=True).exists:
+                        # u2 API 确认按钮已渲染，dump 一次获取坐标
+                        xml = self.d.dump_hierarchy()
+                        submit_coords = self._find_submit_btn_coords(xml)
+                        if submit_coords is not None:
+                            self._submit_btn_coords = submit_coords
+                            logger.info(f"已缓存提交按钮坐标: {submit_coords} (查找耗时: {int((time.time()-_find_start)*1000)}ms)")
+                            break
+                except Exception:
+                    pass
+                time.sleep(0.08)
         else:
             logger.info(f"复用缓存的提交按钮坐标: {submit_coords}")
 
@@ -796,9 +795,13 @@ class PhaseMachine:
             return
         logger.info("已进入订单页，提交按钮已定位")
 
-        # 第二步：等待页面稳定，用户可在此手动勾选观演人
-        logger.info("等待页面稳定，请手动勾选观演人...")
-        time.sleep(0.3)
+        # 第二步：等待页面稳定 + 观演人勾选时间
+        # 仅实战模式需要等用户勾选观演人；探测/演练模式跳过以节省时间
+        if self.safety.mode.if_commit_order:
+            logger.info("等待页面稳定，请手动勾选观演人...")
+            time.sleep(0.3)
+        else:
+            logger.info("非实战模式，跳过观演人等待")
 
         # 第三步：点击「立即提交」
         logger.info("点击「立即提交」...")
