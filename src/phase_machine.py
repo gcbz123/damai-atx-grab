@@ -55,6 +55,7 @@ class PhaseMachine:
         self._rtt_ms: float = 0  # 网络往返延迟（毫秒）
         self.clicker = None  # 将在 _run_init 中初始化
         self._sprint_engine = None
+        self._submit_btn_coords: Optional[tuple[int, int]] = None  # 立即提交按钮坐标缓存（P0+）
 
     def run(self) -> str:
         """运行完整的抢票流程
@@ -141,28 +142,16 @@ class PhaseMachine:
     def _measure_rtt(self):
         """测量 adb 到手机的 RTT（毫秒）
 
-        通过执行一个简单的 adb shell 命令并计时。
-        优化：RTT 采样 2 次取中位数，降低预热时间。
+        优化：单次采样省一次 adb 往返（原 2 次中位数对 N=2 等价于第 1 小值，无统计意义）。
         """
-        trials = 2
-        delays = []
-        for _ in range(trials):
-            start = time.monotonic_ns()
-            try:
-                self.d.shell("echo ok")
-            except Exception:
-                pass
-            elapsed_ns = time.monotonic_ns() - start
-            delays.append(elapsed_ns / 1_000_000)  # 转为毫秒
-
-        if delays:
-            delays.sort()
-            median = delays[len(delays) // 2]
-            self._rtt_ms = median
-            logger.info(f"RTT 测量完成: {median:.1f}ms ({trials} 次采样)")
-        else:
-            self._rtt_ms = 0
-            logger.warning("RTT 测量失败，使用 0ms 补偿")
+        start = time.monotonic_ns()
+        try:
+            self.d.shell("echo ok")
+        except Exception:
+            pass
+        elapsed_ns = time.monotonic_ns() - start
+        self._rtt_ms = elapsed_ns / 1_000_000  # 转为毫秒
+        logger.info(f"RTT 测量完成: {self._rtt_ms:.1f}ms (单次采样)")
 
     def _run_buy(self):
         """阶段 3: 点击「立即购票」"""
@@ -180,13 +169,70 @@ class PhaseMachine:
             logger.info(f"点击购买按钮 @ {buy_coords}")
             self.d.click(*buy_coords)
 
-        # 页面渲染等待
-        time.sleep(0.1)
+        # P1: 用 Activity 轮询代替固定 sleep(0.1)，跳转到票档页即退出（最多 0.5s 兜底）
+        # 实测 d.info 没有 currentActivity 字段（只有 currentPackageName），必须用 dumpsys
+        self._poll_until_activity_change(
+            deadline_ms=500,
+            poll_interval_ms=30,
+            exit_pred=lambda act: act != "" and "detail" not in act.lower(),
+            log_label="BUY→票档页",
+        )
+
+    def _poll_until_activity_change(
+        self,
+        deadline_ms: int,
+        poll_interval_ms: int,
+        exit_pred,
+        log_label: str = "",
+    ) -> str:
+        """通用 Activity 轮询：返回最后拿到的 Activity 名（即使没匹配 exit_pred 也超时退出）
+
+        Args:
+            deadline_ms: 总超时（毫秒）
+            poll_interval_ms: 轮询间隔
+            exit_pred: 接收 activity_str，返回 True 则提前退出
+            log_label: 用于日志标记当前阶段
+
+        Returns:
+            最后一次轮询到的 Activity 名（空字符串表示完全没拿到）
+        """
+        start = time.time()
+        deadline = start + deadline_ms / 1000
+        last_act = ""
+        poll_count = 0
+        while time.time() < deadline:
+            try:
+                out = self.d.shell("dumpsys window | grep mCurrentFocus").output or ""
+                # 输出示例: "  mCurrentFocus=Window{xxx u0 cn.damai/cn.damai....ActivityName}\n"
+                # 提取最后一段包名 + 活动名
+                import re as _re
+                m = _re.search(r'mCurrentFocus=Window\{[^}]+u0\s+([^}/]+)/([^}/\s]+)', out)
+                if m:
+                    last_act = m.group(2)  # 仅取 Activity 名（去掉包名前缀）
+                else:
+                    # 备用正则：拿掉换行后的整个 token
+                    m = _re.search(r'mCurrentFocus=Window\{[^}]+\s+([^\s}]+)', out)
+                    if m:
+                        last_act = m.group(1)
+            except Exception:
+                pass
+            poll_count += 1
+            if last_act and exit_pred(last_act):
+                elapsed = (time.time() - start) * 1000
+                logger.info(f"[{log_label}] Activity 切换到 '{last_act}' (轮询 {poll_count} 次, {elapsed:.0f}ms)")
+                return last_act
+            time.sleep(poll_interval_ms / 1000)
+        elapsed = (time.time() - start) * 1000
+        logger.info(f"[{log_label}] 轮询超时 {deadline_ms}ms (轮询 {poll_count} 次, last='{last_act}', {elapsed:.0f}ms)")
+        return last_act
 
     def _ensure_price_page(self):
         """确保页面在票档选择页（大麦可能先展示场次选择页）
 
-        优化：减少 dump_hierarchy 调用，先用 u2 API 快速检测。
+        优化:
+        - 减少 dump_hierarchy 调用，先用 u2 API 快速检测。
+        - P2: u2 API miss 后用 Activity 检测区分「已票档页」vs「场次选择页」，
+          避免无意义的 dump（票档页 ADN 不到 perform_price 时省 ~700ms）。
         """
         logger.info("--- 确保进入票档页 ---")
 
@@ -198,7 +244,29 @@ class PhaseMachine:
         except Exception:
             pass
 
-        # u2 API 未找到，降级到 XML dump 精确检测
+        # P2: u2 API 未命中，先用 Activity 判断是否已在票档页
+        # 大麦票档/价格选择页 Activity 含 ticket/sku/price/perform
+        # 场次选择页 Activity 通常仍含 detail 或无变化
+        try:
+            out = self.d.shell("dumpsys window | grep mCurrentFocus").output or ""
+            import re as _re
+            m = _re.search(r'mCurrentFocus=Window\{[^}]+u0\s+([^}/]+)/([^}/\s]+)', out)
+            activity = m.group(2) if m else ""
+        except Exception:
+            activity = ""
+        activity_lower = activity.lower()
+
+        if activity_lower and ('ticket' in activity_lower or 'sku' in activity_lower
+                                or 'price' in activity_lower or 'perform' in activity_lower):
+            # 已在票档页：Activity 已确认，dump 缓存 XML 供 _find_price_coords 复用
+            logger.info(f"Activity={activity} 确认在票档页，缓存 XML")
+            self._cached_xml = self.d.dump_hierarchy()
+            import xml.etree.ElementTree as ET
+            self._cached_xml_tree = ET.fromstring(self._cached_xml.encode("utf-8"))
+            return
+
+        # u2 API 未命中 + Activity 不在票档页 → 大概率还在场次选择页
+        # 用 XML dump 精确检测场次选择页（这是必须的，因为要确认是否需要选场次）
         logger.info("u2 API 未检测到票档区，使用 XML dump 精确检测...")
         xml = self.d.dump_hierarchy()
         import xml.etree.ElementTree as ET
@@ -257,9 +325,13 @@ class PhaseMachine:
     def _select_price_item(self):
         """选择票档 — 优先从页面 XML 动态查找，失败则降级到硬编码坐标
 
-        优化：
+        优化:
         - 改用 click 替代 long_click（节省 0.3s）
-        - 减少重试逻辑（一次失败即记录警告）
+        - P3: 轮询间隔改 20ms（原 50ms），超时 0.6s（原 0.3s）——
+          实测 layout_num 元素可能出现稍晚，0.3s 不够稳；
+          20ms 间隔让首次命中加快 ~30ms，0.6s 超时给页面加载留余量。
+        - P3: 重试时对 xml-c 策略返回的坐标做 +15px 横向偏移（实测 (212,1360)
+          第一次未命中按钮有效区，+15px 偏到按钮中心更靠右的可点击区）。
         """
         logger.info(f"选择票档索引: {self.config.price_index}")
 
@@ -269,31 +341,50 @@ class PhaseMachine:
 
         # 策略 1: 从页面 XML 提取票档列表，按索引选择（复用缓存 XML）
         coords = self._find_price_coords(target_idx, cached_xml=getattr(self, '_cached_xml', None))
+        strategy_used = getattr(self, '_last_strategy', '')
         if coords is None:
             # 策略 2: 降级到硬编码坐标
             coords = self._fallback_price_coords(target_idx)
+            strategy_used = 'fallback'
 
         # 使用 click 而非 long_click（节省 300ms+）
         self.d.click(*coords)
-        logger.info(f"选择票档 @ {coords}")
+        logger.info(f"选择票档 @ {coords} (策略: {strategy_used})")
 
-        # 轮询检测数量选择区（代替固定 sleep，元素出现后立即退出）
+        # 轮询检测数量选择区（20ms 间隔，600ms 超时；元素出现即退出）
         _poll_start = time.time()
         _detected = False
-        while time.time() - _poll_start < 0.3:
+        while time.time() - _poll_start < 0.6:
             try:
                 if self.d(resourceIdContains='layout_num').exists:
                     _detected = True
                     break
             except Exception:
                 pass
-            time.sleep(0.05)
+            time.sleep(0.02)
         if _detected:
             logger.info("票档已选中（检测到数量选择区）")
         else:
-            logger.warning("票档可能未选中，重试一次")
-            self.d.click(*coords)
-            time.sleep(0.15)
+            # P3: 重试时对 xml-c 策略返回的坐标加 +15px 横向偏移
+            retry_coords = coords
+            if strategy_used == 'xml-c':
+                retry_coords = (coords[0] + 15, coords[1])
+                logger.warning(f"票档未选中，重试 xml-c 坐标 +15px 偏移: {coords} -> {retry_coords}")
+            else:
+                logger.warning(f"票档可能未选中，重试一次 @ {retry_coords}")
+            self.d.click(*retry_coords)
+            # 重试后用更短轮询确认（260ms 足矣，前面已等过 600ms）
+            _retry_start = time.time()
+            while time.time() - _retry_start < 0.26:
+                try:
+                    if self.d(resourceIdContains='layout_num').exists:
+                        _detected = True
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.02)
+            if _detected:
+                logger.info("票档已选中（重试后检测到数量选择区）")
 
     def _find_price_coords(self, target_idx: int, cached_xml: str = None) -> Optional[tuple[int, int]]:
         """查找票档元素坐标，返回第 N 个的坐标
@@ -315,6 +406,7 @@ class PhaseMachine:
         Returns:
             (x, y) 坐标，或 None
         """
+        self._last_strategy = ''  # P3: 跟踪本次定位策略，供 _select_price_item 重试参考
         screen_w, screen_h = self.d.window_size()
         y_min = int(screen_h * 0.1)    # 排除顶部标题栏
         y_max = int(screen_h * 0.72)   # 排除底部导航栏
@@ -524,6 +616,7 @@ class PhaseMachine:
         if target_idx < len(candidates):
             coord = candidates[target_idx]
             logger.info(f"选择第 {target_idx + 1} 个票档 @ {coord} (策略: {strategy})")
+            self._last_strategy = strategy  # P3: 让 _select_price_item 知道用了哪个策略
             return coord
         logger.warning(f"策略{strategy}: 候选 {len(candidates)} 个, 目标索引 {target_idx} 超出")
         return None
@@ -619,43 +712,60 @@ class PhaseMachine:
         """阶段 5: 进入订单页 → 点击「立即提交」（用户手动勾选观演人）
 
         优化：
-        - u2 API 检测优先（免 dump_hierarchy + 非递归查找，省 ~700ms）
-        - 缩短 sleep 时间
+        - P0: 用 Activity 轮询代替固定 sleep(0.5)（实测 d.info 没有 currentActivity，
+          用 d.shell dumpsys window 拿 Activity，~130ms/次；2-3 次轮询优于固定 500ms）
+        - P0+: 缓存 _submit_btn_coords，命中则跳过 dump_hierarchy（省 ~700ms）
+        - 连点 2 次间不再 sleep（click 命令天然串行）
         """
         self.set_phase(Phase.CONFIRM)
 
         logger.info("--- 确认订单 ---")
 
-        # 第一步：点击底部购买按钮，进入订单页
+        # 第一步：连点 2 次底部购买按钮进入订单页（两次 click 之间不需 sleep，
+        # click 命令串行执行，第一次 click 已在 USB 上排队）
         buy_coords = (841, 2250)
-
-        # 连点两次进入订单页（第二次 sleep 加长到 0.50 等页面完全稳定，避免 u2 卡 idle）
         self.d.click(*buy_coords)
-        time.sleep(0.1)
         self.d.click(*buy_coords)
-        time.sleep(0.50)
 
-        # 单次 u2 API 检测（页面已稳定，u2.exists 不再阻塞等待 idle）
-        submit_coords = None
-        try:
-            btn = self.d(textContains='立即提交')
-            if btn and btn.exists:
-                cx, cy = btn.center
-                submit_coords = (int(cx), int(cy))
-                logger.info(f"u2 API 定位提交按钮 @{submit_coords}")
-        except Exception:
-            pass
+        # P0: 用 Activity 轮询检测页面跳转（~130ms 一次 dumpsys），超时 1.2s 兜底
+        activity_lower = ""
+        last_activity = self._poll_until_activity_change(
+            deadline_ms=1200,
+            poll_interval_ms=50,
+            exit_pred=lambda act: 'order' in act.lower() or 'confirm' in act.lower(),
+            log_label="CONFIRM→订单页",
+        )
+        activity_lower = last_activity.lower()
+        entered_order = 'order' in activity_lower or 'confirm' in activity_lower
 
-        if submit_coords is None:
-            # u2 API 未找到，降级到 XML dump
+        xml = None
+        if not entered_order:
+            # Activity 检测失败兜底：dump 一次确认是否在订单页
+            logger.warning(f"Activity 轮询未确认进入订单页 (last={last_activity}), 用 XML 兜底")
             xml = self.d.dump_hierarchy()
             if '立即提交' in xml or 'submit_order' in xml or 'order_activity' in xml:
-                submit_coords = self._find_submit_btn_coords(xml)
-                logger.info("已进入订单页（XML 检测）")
+                entered_order = True
             else:
                 logger.warning("连点2次后仍未进入订单页")
                 self.set_phase(Phase.ERROR)
                 return
+
+        # P0+: 优先用缓存的提交按钮坐标，命中则免 dump
+        submit_coords = self._submit_btn_coords
+        if submit_coords is None:
+            # 仅在没缓存时才 dump（兜底路径已 dump 过则复用）
+            if xml is None:
+                xml = self.d.dump_hierarchy()
+            submit_coords = self._find_submit_btn_coords(xml)
+            if submit_coords is None:
+                logger.warning("XML 中未找到「立即提交」按钮坐标")
+                self.set_phase(Phase.ERROR)
+                return
+            self._submit_btn_coords = submit_coords  # 缓存供下次复用
+            logger.info(f"已缓存提交按钮坐标: {submit_coords}")
+        else:
+            logger.info(f"复用缓存的提交按钮坐标: {submit_coords}")
+        logger.info("已进入订单页")
 
         # 第二步：等待页面稳定，用户可在此手动勾选观演人
         logger.info("等待页面稳定，请手动勾选观演人...")
