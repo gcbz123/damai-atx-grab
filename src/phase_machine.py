@@ -347,6 +347,12 @@ class PhaseMachine:
             coords = self._fallback_price_coords(target_idx)
             strategy_used = 'fallback'
 
+        # 对 xml-c 策略直接应用 +15px 横向偏移（实测 xml-c 计算的中心偏左，
+        # (212,1360) 未命中可点击区，(227,1360) 命中。直接偏移，避免重试多耗 ~800ms）
+        if strategy_used == 'xml-c':
+            coords = (coords[0] + 15, coords[1])
+            logger.info(f"xml-c 坐标 +15px 偏移 -> {coords}")
+
         # 使用 click 而非 long_click（节省 300ms+）
         self.d.click(*coords)
         logger.info(f"选择票档 @ {coords} (策略: {strategy_used})")
@@ -365,13 +371,9 @@ class PhaseMachine:
         if _detected:
             logger.info("票档已选中（检测到数量选择区）")
         else:
-            # P3: 重试时对 xml-c 策略返回的坐标加 +15px 横向偏移
+            # 首次未命中，重试一次（保留兜底；xml-c 的偏移已前置到首次点击）
             retry_coords = coords
-            if strategy_used == 'xml-c':
-                retry_coords = (coords[0] + 15, coords[1])
-                logger.warning(f"票档未选中，重试 xml-c 坐标 +15px 偏移: {coords} -> {retry_coords}")
-            else:
-                logger.warning(f"票档可能未选中，重试一次 @ {retry_coords}")
+            logger.warning(f"票档可能未选中，重试一次 @ {retry_coords}")
             self.d.click(*retry_coords)
             # 重试后用更短轮询确认（260ms 足矣，前面已等过 600ms）
             _retry_start = time.time()
