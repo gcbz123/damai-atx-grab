@@ -155,7 +155,7 @@ class PhaseMachine:
 
         logger.info("--- 点击立即购票 ---")
 
-        # 降级到硬编码坐标
+        # 详情页的「立即购票」按钮无标准 resource-id，直接用坐标点击
         buy_coords = (841, 2250)
         logger.info(f"点击购买按钮 @ {buy_coords}")
         self.d.click(*buy_coords)
@@ -195,22 +195,22 @@ class PhaseMachine:
         poll_count = 0
         while time.time() < deadline:
             try:
-                out = self.d.shell("dumpsys window | grep mCurrentFocus").output or ""
-                # 输出示例: "  mCurrentFocus=Window{xxx u0 cn.damai/cn.damai....ActivityName}\n"
-                # 提取最后一段包名 + 活动名
+                # 使用 dumpsys activity activities（华为设备 mCurrentFocus 返回 AOD）
+                out = self.d.shell("dumpsys activity activities | grep -i resumed").output or ""
                 import re as _re
-                m = _re.search(r'mCurrentFocus=Window\{[^}]+u0\s+([^}/]+)/([^}/\s]+)', out)
+                # topResumedActivity=ActivityRecord{... u0 pkg/Activity ...}
+                m = _re.search(r'topResumedActivity=ActivityRecord\{[^}]+u0\s+\S+/([^}\s]+)', out)
                 if m:
-                    last_act = m.group(2)  # 仅取 Activity 名（去掉包名前缀）
+                    last_act = m.group(1)
                 else:
-                    # 备用正则：拿掉换行后的整个 token
-                    m = _re.search(r'mCurrentFocus=Window\{[^}]+\s+([^\s}]+)', out)
+                    # 备用：Resumed: ActivityRecord{...}
+                    m = _re.search(r'Resumed:\s*ActivityRecord\{[^}]+u0\s+\S+/([^}\s]+)', out)
                     if m:
                         last_act = m.group(1)
             except Exception:
                 pass
             poll_count += 1
-            if last_act and exit_pred(last_act):
+            if last_act and exit_pred and exit_pred(last_act):
                 elapsed = (time.time() - start) * 1000
                 logger.info(f"[{log_label}] Activity 切换到 '{last_act}' (轮询 {poll_count} 次, {elapsed:.0f}ms)")
                 return last_act
@@ -240,10 +240,11 @@ class PhaseMachine:
             activity = activity_hint
         else:
             try:
-                out = self.d.shell("dumpsys window | grep mCurrentFocus").output or ""
+                # 使用 dumpsys activity activities（华为设备 mCurrentFocus 返回 AOD）
+                out = self.d.shell("dumpsys activity activities | grep -i resumed").output or ""
                 import re as _re
-                m = _re.search(r'mCurrentFocus=Window\{[^}]+u0\s+([^}/]+)/([^}/\s]+)', out)
-                activity = m.group(2) if m else ""
+                m = _re.search(r'topResumedActivity=ActivityRecord\{[^}]+u0\s+\S+/([^}\s]+)', out)
+                activity = m.group(1) if m else ""
             except Exception:
                 activity = ""
         activity_lower = activity.lower()
@@ -463,6 +464,25 @@ class PhaseMachine:
             except Exception:
                 pass
 
+        # — u2-d: 按 ll_perform_item 定位（大麦 UI 改版后价格项无文本）
+        # 只匹配 price_flowlayout 容器内的子项，排除场次选择区域
+        try:
+            price_flow = self.d(resourceIdContains='price_flowlayout')
+            if price_flow.exists:
+                child = price_flow.child(resourceIdMatches='.*ll_perform_item')
+                if child.exists:
+                    coords = []
+                    for el in child:
+                        cx, cy = el.center
+                        if y_min <= cy <= y_max:
+                            coords.append((cx, cy))
+                    coords = self._dedup_candidates(coords)
+                    if coords:
+                        logger.debug(f"u2-d(ll_perform_item): 找到 {len(coords)} 个")
+                        return self._pick_from_candidates(coords, target_idx, "u2-d")
+        except Exception:
+            pass
+
         return None
 
     def _find_via_xml(self, y_min: int, y_max: int, min_width: int,
@@ -534,6 +554,27 @@ class PhaseMachine:
                 if result:
                     return result
 
+            # —— xml-d: ll_perform_item 直接定位（大麦 UI 改版后价格项无文本）
+            # 只匹配 price_flowlayout 容器内的子项，排除场次选择区域的 ll_perform_item
+            candidates_d = []
+            price_flows = root.findall('.//*[@resource-id="cn.damai:id/project_detail_perform_price_flowlayout"]')
+            for pf in price_flows:
+                for el in pf.findall('.//*[@resource-id="cn.damai:id/ll_perform_item"]'):
+                    bounds_str = (el.get("bounds") or "").strip()
+                    m = _BOUNDS_RE.match(bounds_str)
+                    if not m:
+                        continue
+                    x1, y1, x2, y2 = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+                    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                    if y_min <= cy <= y_max:
+                        candidates_d.append((cx, cy))
+            unique = self._dedup_candidates(candidates_d)
+            if unique:
+                logger.debug(f"xml-d ll_perform_item 匹配到 {len(unique)} 个: {unique}")
+                result = self._pick_from_candidates(unique, target_idx, "xml-d")
+                if result:
+                    return result
+
             # —— xml-c: Y 行分组 ———
             clickable_in_zone = [(cx, cy) for cx, cy, w in clickable_raw if w >= min_width]
             if not clickable_in_zone:
@@ -586,11 +627,17 @@ class PhaseMachine:
     def _pick_from_candidates(self, candidates: list, target_idx: int,
                               strategy: str = "") -> Optional[tuple[int, int]]:
         """从候选列表中选取目标索引的坐标"""
-        if target_idx < len(candidates):
-            coord = candidates[target_idx]
+        if not candidates:
+            return None
+        # 索引超出时取最后一个（price_index 配置可能超过实际票档数）
+        actual_idx = min(target_idx, len(candidates) - 1)
+        coord = candidates[actual_idx]
+        if actual_idx != target_idx:
+            logger.info(f"目标索引 {target_idx + 1} 超出候选数 {len(candidates)}，取最后一个 @ {coord} (策略: {strategy})")
+        else:
             logger.info(f"选择第 {target_idx + 1} 个票档 @ {coord} (策略: {strategy})")
-            self._last_strategy = strategy  # P3: 让 _select_price_item 知道用了哪个策略
-            return coord
+        self._last_strategy = strategy  # P3: 让 _select_price_item 知道用了哪个策略
+        return coord
         logger.warning(f"策略{strategy}: 候选 {len(candidates)} 个, 目标索引 {target_idx} 超出")
         return None
 
@@ -735,11 +782,30 @@ class PhaseMachine:
 
         logger.info("--- 确认订单 ---")
 
-        # 第一步：连点 2 次底部购买按钮进入订单页（两次 click 之间不需 sleep，
-        # click 命令串行执行，第一次 click 已在 USB 上排队）
-        buy_coords = (841, 2250)
-        self.d.click(*buy_coords)
-        self.d.click(*buy_coords)
+        # 第一步：点击底部购买按钮进入订单页
+        # 必须用 u2 API 按 resourceId 点击（坐标点击会命中外层 FrameLayout 而非 btn_buy_view）
+        # StaleObjectException 时重试（页面切换导致对象过期）
+        clicked = False
+        for attempt in range(3):
+            try:
+                btn = self.d(resourceId='cn.damai:id/btn_buy_view')
+                if btn.exists:
+                    logger.info(f"点击 btn_buy_view (u2 API, 第{attempt+1}次)")
+                    btn.click()
+                    clicked = True
+                    break
+                else:
+                    logger.warning("btn_buy_view 未找到，降级坐标点击")
+                    self.d.click(841, 2250)
+                    clicked = True
+                    break
+            except Exception as e:
+                logger.warning(f"点击 btn_buy_view 异常(第{attempt+1}次): {e}")
+                if attempt < 2:
+                    time.sleep(0.05)
+        if not clicked:
+            logger.warning("btn_buy_view 点击失败，降级坐标点击")
+            self.d.click(841, 2250)
 
         # P0: 用 Activity 轮询检测页面跳转（~130ms 一次 dumpsys），超时 1.2s 兜底
         activity_lower = ""
