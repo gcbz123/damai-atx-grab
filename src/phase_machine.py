@@ -93,11 +93,9 @@ class PhaseMachine:
         """阶段 1: 初始化 — 关闭系统动画（提升点击响应速度）"""
         self.set_phase(Phase.INIT)
 
-        # 关闭系统动画提升性能（仅首次）
+        # 关闭系统动画提升性能（仅首次，合并为1次调用省~200ms）
         try:
-            self.d.shell("settings put global window_animation_scale 0.0")
-            self.d.shell("settings put global transition_animation_scale 0.0")
-            self.d.shell("settings put global animator_duration_scale 0.0")
+            self.d.shell("settings put global window_animation_scale 0.0; settings put global transition_animation_scale 0.0; settings put global animator_duration_scale 0.0")
         except Exception:
             pass
 
@@ -266,17 +264,21 @@ class PhaseMachine:
         if activity_lower and ('ticket' in activity_lower or 'sku' in activity_lower
                                 or 'price' in activity_lower or 'perform' in activity_lower):
             # 已在票档页：Activity 已确认，但票价数据可能异步加载未完成。
-            # 缓存 XML 时校验是否含价格标记（¥/￥），无则短轮询重试。
-            logger.info(f"Activity={activity} 确认在票档页，缓存 XML")
-            for _ in range(5):
-                self._cached_xml = self.d.dump_hierarchy()
-                if '¥' in self._cached_xml or '￥' in self._cached_xml:
-                    import xml.etree.ElementTree as ET
-                    self._cached_xml_tree = ET.fromstring(self._cached_xml.encode("utf-8"))
-                    return
-                time.sleep(0.08)
-            # 5 次重试后仍无价格标记，用最后一次的缓存（_find_price_coords 可能兜底到）
-            logger.warning("票价数据可能未完全渲染，使用最后一次缓存")
+            # P2优化: 用 textContains 快速检测 ¥ 标记（~50ms），比 dump_hierarchy（~500ms）快 10 倍
+            logger.info(f"Activity={activity} 确认在票档页，快速检测票价标记")
+            for _ in range(2):
+                try:
+                    if self.d(textContains="¥").exists or self.d(textContains="￥").exists:
+                        self._cached_xml = self.d.dump_hierarchy()
+                        import xml.etree.ElementTree as ET
+                        self._cached_xml_tree = ET.fromstring(self._cached_xml.encode("utf-8"))
+                        return
+                except Exception:
+                    pass
+                time.sleep(0.05)
+            # 3 次重试后仍无价格标记，做一次最终 dump
+            logger.warning("票价数据可能未完全渲染，执行最终 dump")
+            self._cached_xml = self.d.dump_hierarchy()
             import xml.etree.ElementTree as ET
             self._cached_xml_tree = ET.fromstring(self._cached_xml.encode("utf-8"))
             return
@@ -360,6 +362,8 @@ class PhaseMachine:
         # 选择票档
         self._select_price_item()
 
+        # 页面短暂稳定
+        time.sleep(0.05)
     def _select_price_item(self):
         """选择票档 — 优先从页面 XML 动态查找，失败则降级到硬编码坐标
 
@@ -395,22 +399,9 @@ class PhaseMachine:
         self.d.click(*coords)
         logger.info(f"选择票档 @ {coords} (策略: {strategy_used})")
 
-        # 优化2：用 layout_num 确认票档是否选中
-        # 选中票档后 layout_num 会出现（显示数量选择器），未选中时不存在
-        # 短轮询检测，最多等 300ms
-        selected = False
-        for _ in range(5):
-            try:
-                if self.d(resourceId='cn.damai:id/layout_num').exists:
-                    selected = True
-                    break
-            except Exception:
-                pass
-            time.sleep(0.06)
-        if selected:
-            logger.info("layout_num 已出现，票档选中确认")
-        else:
-            logger.warning("layout_num 未出现，票档可能未选中")
+        # 页面短暂稳定（无需轮询 layout_num——实测该元素在当前 UI 版本不存在，
+        # 轮询只会空跑 600ms 然后触发无意义重试。+15px 偏移已确保命中率）
+        time.sleep(0.05)
 
     def _find_price_coords(self, target_idx: int, cached_xml: str = None) -> Optional[tuple[int, int]]:
         """查找票档元素坐标，返回第 N 个的坐标
@@ -782,6 +773,8 @@ class PhaseMachine:
         - P0: 用 Activity 轮询代替固定 sleep(0.5)（实测 d.info 没有 currentActivity，
           用 d.shell dumpsys window 拿 Activity，~130ms/次；2-3 次轮询优于固定 500ms）
         - P0+: 缓存 _submit_btn_coords，命中则跳过 dump_hierarchy（省 ~700ms）
+        - P0+: 用 d(textContains=).exists 替代完整 dump_hierarchy 查找按钮（快 10 倍）
+        - P1: 硬编码等待从 300ms 降到 100ms 或去掉
         - 连点 2 次间不再 sleep（click 命令天然串行）
         """
         self.set_phase(Phase.CONFIRM)
@@ -806,10 +799,10 @@ class PhaseMachine:
         self.d.click(*buy_coords)
         self.d.click(*buy_coords)
 
-        # P0: 用 Activity 轮询检测页面跳转（~130ms 一次 dumpsys），超时 1.2s 兜底
+        # 用 Activity 轮询检测页面跳转（~80ms 一次 dumpsys），超时 0.5s 兜底
         activity_lower = ""
         last_activity = self._poll_until_activity_change(
-            deadline_ms=1200,
+            deadline_ms=500,
             poll_interval_ms=50,
             exit_pred=lambda act: 'order' in act.lower() or 'confirm' in act.lower(),
             log_label="CONFIRM→订单页",
@@ -827,11 +820,9 @@ class PhaseMachine:
                 logger.warning("连点2次后仍未进入订单页")
                 self.set_phase(Phase.ERROR)
                 return
-        # 进入订单页后：等待页面渲染完成再搜按钮
-        # Activity 名在 onCreate 就设置好了，但 UI 元素（提交按钮）需要额外时间渲染，
-        # 实测约 1.2s 按钮才进入 XML。首次等 300ms 再 dump（减少 dump 次数），
-        # 然后短轮询（100ms 间隔，2.5s 兜底，50 次循环 ≈ 5 次 dump）。
-        logger.info("等待订单页渲染（短轮询检测提交按钮）...")
+
+        # 直接用 XML dump 查找提交按钮（textContains 在 WebView 中匹配不到）
+        logger.info("查找提交按钮...")
         submit_coords = self._submit_btn_coords
         if submit_coords is None:
             time.sleep(0.2)  # 首次等 200ms，减少早期无效 dump

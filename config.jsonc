@@ -3,14 +3,14 @@
   "app_package": "cn.damai",
   "app_activity": ".launcher.splash.SplashMainActivity",
   "item_url": "https://m.damai.cn/damai/home/index.html?itemId=19268449026",  // 商品链接（优先级高于 keyword）
-  "keyword": "【襄阳】“赴长歌”2026襄阳国风演唱会",  // 搜索关键词
+  "keyword": "武汉·赵传2026《当我们年轻的时候》巡回演唱会-",  // 搜索关键词
   "users": [  // 观演人列表
     "XXX"
   ],
-  "city": "襄阳",
-  "date": "07.19",
-  "price": "680",
-  "price_index": 5,
+  "city": "武汉",
+  "date": "08.08",
+  "price": "380",
+  "price_index": 3,
   "if_commit_order": false,  // true=正式提交订单
   "probe_only": true,  // true=仅探测不点购票
   "auto_navigate": true,  // 自动导航到目标演出

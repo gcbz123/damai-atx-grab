@@ -1,0 +1,50 @@
+[32m07-08 22:45:09.946[0m | [34m[1mDEBUG  [0m | [36msrc.logger[0m:[36minit[0m:[36m63[0m | [34m[1m日志模块初始化完成[0m
+[32m07-08 22:45:09.947[0m | [1mINFO   [0m | [36msrc.config_loader[0m:[36m_validate[0m:[36m142[0m | [1m配置校验通过[0m
+[32m07-08 22:45:09.947[0m | [1mINFO   [0m | [36msrc.config_loader[0m:[36mload_config[0m:[36m116[0m | [1m配置加载完成: C:\Users\Administrator\Desktop\damai-atx-grab\config.jsonc[0m
+[32m07-08 22:45:09.948[0m | [1mINFO   [0m | [36msrc.safety_guard[0m:[36m__init__[0m:[36m56[0m | [1m安全模式: 🧪 演练模式（不提交） - 走到确认页，停在『立即提交』前，不下单[0m
+[32m07-08 22:45:09.948[0m | [1mINFO   [0m | [36m__main__[0m:[36mmain[0m:[36m168[0m | [1m运行模式: 🧪 演练模式（不提交）[0m
+[32m07-08 22:45:09.948[0m | [1mINFO   [0m | [36m__main__[0m:[36mmain[0m:[36m169[0m | [1m目标演出: city=武汉 date=08.08[0m
+[32m07-08 22:45:09.948[0m | [1mINFO   [0m | [36m__main__[0m:[36mmain[0m:[36m170[0m | [1m开售时间: 2026-07-01 20:00:00[0m
+[32m07-08 22:45:09.948[0m | [1mINFO   [0m | [36m__main__[0m:[36mmain[0m:[36m171[0m | [1m观演人: ['XXX'][0m
+[32m07-08 22:45:09.948[0m | [1mINFO   [0m | [36m__main__[0m:[36mmain[0m:[36m176[0m | [1m连接设备: AN2FVB1913005525[0m
+[32m07-08 22:45:10.225[0m | [1mINFO   [0m | [36m__main__[0m:[36mmain[0m:[36m182[0m | [1m✅ 设备连接成功: NTH-AN00[0m
+[32m07-08 22:45:10.447[0m | [1mINFO   [0m | [36m__main__[0m:[36mmain[0m:[36m183[0m | [1m   屏幕: (1080, 2340)[0m
+[32m07-08 22:45:10.448[0m | [1mINFO   [0m | [36m__main__[0m:[36mmain[0m:[36m184[0m | [1m   系统: [0m
+[32m07-08 22:45:10.448[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36mrun[0m:[36m66[0m | [1m==================================================[0m
+[32m07-08 22:45:10.448[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36mrun[0m:[36m67[0m | [1m抢票流程启动[0m
+[32m07-08 22:45:10.448[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36mrun[0m:[36m68[0m | [1m安全模式: 🧪 演练模式（不提交）[0m
+[32m07-08 22:45:10.448[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36mrun[0m:[36m69[0m | [1m==================================================[0m
+[32m07-08 22:45:10.448[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36mset_phase[0m:[36m90[0m | [1m阶段转换: 初始化[0m
+[32m07-08 22:45:10.657[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36mset_phase[0m:[36m90[0m | [1m阶段转换: 等待开售[0m
+[32m07-08 22:45:10.718[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_measure_rtt[0m:[36m152[0m | [1mRTT 测量完成: 63.0ms (单次采样)[0m
+[32m07-08 22:45:10.718[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_run_wait[0m:[36m125[0m | [1m距离开售还有 -614710.8 秒 (RTT补偿: 63ms)[0m
+[32m07-08 22:45:10.718[0m | [33m[1mWARNING[0m | [36msrc.phase_machine[0m:[36m_run_wait[0m:[36m136[0m | [33m[1m开售已过 614710.8 秒，跳过等待[0m
+[32m07-08 22:45:10.718[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_run_wait[0m:[36m138[0m | [1m⏰ 到达开售时间！[0m
+[32m07-08 22:45:10.718[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36mset_phase[0m:[36m90[0m | [1m阶段转换: 点击购票[0m
+[32m07-08 22:45:10.718[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_run_buy[0m:[36m158[0m | [1m--- 点击立即购票 ---[0m
+[32m07-08 22:45:10.718[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_run_buy[0m:[36m167[0m | [1m点击购买按钮 @ (841, 2250)[0m
+[32m07-08 22:45:11.205[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_poll_until_activity_change[0m:[36m220[0m | [1m[BUY→票档页] Activity 切换到 'cn.damai.commonbusiness.seatbiz.sku.qilin.ui.NcovSkuActivity' (轮询 1 次, 84ms)[0m
+[32m07-08 22:45:11.206[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36mset_phase[0m:[36m90[0m | [1m阶段转换: 选择票档[0m
+[32m07-08 22:45:11.206[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_run_select_price[0m:[36m321[0m | [1m--- 选择票档 ---[0m
+[32m07-08 22:45:11.206[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_ensure_price_page[0m:[36m235[0m | [1m--- 确保进入票档页 ---[0m
+[32m07-08 22:45:11.306[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_ensure_price_page[0m:[36m261[0m | [1mActivity=cn.damai.commonbusiness.seatbiz.sku.qilin.ui.NcovSkuActivity 确认在票档页，快速检测票价标记[0m
+[32m07-08 22:45:11.503[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_select_price_item[0m:[36m347[0m | [1m选择票档索引: 3[0m
+[32m07-08 22:45:11.715[0m | [34m[1mDEBUG  [0m | [36msrc.phase_machine[0m:[36m_find_via_xml[0m:[36m569[0m | [34m[1mxml-c 行分组到 5 个: [(290, 1090), (759, 1090), (212, 1261), (525, 1261), (851, 1261)][0m
+[32m07-08 22:45:11.715[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_pick_from_candidates[0m:[36m604[0m | [1m选择第 3 个票档 @ (212, 1261) (策略: xml-c)[0m
+[32m07-08 22:45:11.716[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_select_price_item[0m:[36m365[0m | [1mxml-c 坐标 +15px 偏移 -> (227, 1261)[0m
+[32m07-08 22:45:11.908[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_select_price_item[0m:[36m369[0m | [1m选择票档 @ (227, 1261) (策略: xml-c)[0m
+[32m07-08 22:45:12.010[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36mset_phase[0m:[36m90[0m | [1m阶段转换: 确认订单[0m
+[32m07-08 22:45:12.010[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_run_confirm[0m:[36m751[0m | [1m--- 确认订单 ---[0m
+[32m07-08 22:45:12.615[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_poll_until_activity_change[0m:[36m220[0m | [1m[CONFIRM→订单页] Activity 切换到 'cn.damai.ultron.view.activity.DmOrderActivity' (轮询 1 次, 90ms)[0m
+[32m07-08 22:45:12.615[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_run_confirm[0m:[36m782[0m | [1m查找提交按钮...[0m
+[32m07-08 22:45:13.099[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_find_submit_btn_coords[0m:[36m670[0m | [1m文本匹配「立即提交」-> @(822, 2251)[0m
+[32m07-08 22:45:13.099[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_run_confirm[0m:[36m794[0m | [1m已缓存提交按钮坐标: (822, 2251) (查找耗时: 383ms)[0m
+[32m07-08 22:45:13.100[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_run_confirm[0m:[36m806[0m | [1m已进入订单页，提交按钮已定位[0m
+[32m07-08 22:45:13.100[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_run_confirm[0m:[36m809[0m | [1m等待页面稳定（100ms）...[0m
+[32m07-08 22:45:13.200[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_run_confirm[0m:[36m813[0m | [1m点击「立即提交」...[0m
+[32m07-08 22:45:13.407[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_run_confirm[0m:[36m815[0m | [1m已点击提交按钮 @ (822, 2251)[0m
+[32m07-08 22:45:13.407[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36mset_phase[0m:[36m90[0m | [1m阶段转换: 完成[0m
+[32m07-08 22:45:13.408[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_run_confirm[0m:[36m819[0m | [1m==================================================[0m
+[32m07-08 22:45:13.408[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_run_confirm[0m:[36m820[0m | [1m🎉 订单已提交，请在手机上手动完成支付[0m
+[32m07-08 22:45:13.408[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36m_run_confirm[0m:[36m821[0m | [1m==================================================[0m
+[32m07-08 22:45:13.408[0m | [1mINFO   [0m | [36msrc.phase_machine[0m:[36mrun[0m:[36m84[0m | [1m最终状态: 完成[0m

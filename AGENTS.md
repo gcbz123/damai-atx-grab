@@ -109,7 +109,9 @@ JSONC 格式（支持 `//` 注释和尾逗号）。关键字段：
 }
 ```
 
-⚠️ `price_index` 从 **1** 开始（GUI 表单填入时不变），但内部取列表时做 `min(idx-1, len-1)`。
+其他可选字段：`app_package`、`app_activity`、`auto_navigate`、`warmup_sec`、`ntp_server`、`log_level`、`log_dir`、`perform_index`。
+
+⚠️ `price_index` 从 **1** 开始（用户输入），内部转 0-based：`target_idx = price_index - 1`。`perform_index` 同理（0=不指定，默认第1场）。
 - **选择票档逻辑** (`phase_machine.py`): 两阶段多策略混合定位。
   **阶段 0 — u2 API 直接查找**（优先可靠）:
   - a) 找 resource-id 含 `perform_price` / `price_item` / `price_flowlayout` 的容器内的 clickable 子元素
